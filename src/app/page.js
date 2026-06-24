@@ -453,7 +453,7 @@ export default function App() {
 
   const timeLeft = MAX_TIME - timer;
   const timeColor = timeLeft<60?"#f87171":timeLeft<120?"#fb923c":"#a5b4fc";
-  const progressPct = (timer_TIME)*100;
+  const progressPct = (timer/MAX_TIME)*100;
 
   // ─── SETUP SCREEN ─────────────────────────────────────────────────────────
   if (screen==="setup") return (
