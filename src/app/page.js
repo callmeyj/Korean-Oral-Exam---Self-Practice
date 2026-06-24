@@ -209,14 +209,14 @@ export default function App() {
       setTimeout(()=> startListening(), 400);
     };
 
-    if (synthRef.current && ttsReady) {
+    // Always try to speak directly — ttsReady set on startExam button press
+    if (synthRef.current) {
       setPhase("examiner_speaking");
       phaseRef.current = "examiner_speaking";
       speak(text, onEnd);
     } else {
-      pendingOnEndRef.current = onEnd;
-      setPhase("question_ready");
-      phaseRef.current = "question_ready";
+      // Fallback: skip TTS, just start listening
+      onEnd();
     }
   }
 
@@ -229,7 +229,7 @@ export default function App() {
     speakAndListen(q, false);
   }
 
-  // ── User taps play button (mobile) ──
+  // ── Fallback if TTS was delayed — speak current question ──
   function handlePlayQuestion() {
     const onEnd = pendingOnEndRef.current || (()=>{
       setPhase("waiting_student");
@@ -237,7 +237,7 @@ export default function App() {
       setTimeout(()=> startListening(), 400);
     });
     pendingOnEndRef.current = null;
-    setTtsReady(true);
+    if (!synthRef.current) synthRef.current = window.speechSynthesis;
     setPhase("examiner_speaking");
     phaseRef.current = "examiner_speaking";
     speak(currentQ, onEnd);
@@ -422,6 +422,9 @@ Enrichment Question은 학생의 의견, 느낌, 이유, 생각을 묻는 질문
     setLiveText("");
     examActiveRef.current = true;
     oeeStageRef.current = 0;
+    // Mark TTS as ready — user gesture (button click) unlocks autoplay
+    setTtsReady(true);
+    if (!synthRef.current) synthRef.current = window.speechSynthesis;
     setScreen("exam");
 
     timerRef.current = setInterval(()=>{
@@ -598,14 +601,10 @@ Return ONLY valid JSON:
 
           {/* Status dots */}
           {phase==="question_ready" && (
-            <div style={{display:"flex",justifyContent:"flex-start",marginBottom:8}}>
-              <button onClick={handlePlayQuestion}
-                style={{display:"flex",alignItems:"center",gap:8,padding:"10px 18px",
-                  borderRadius:12,border:"none",cursor:"pointer",
-                  background:"linear-gradient(135deg,#6366f1,#8b5cf6)",color:"white",
-                  fontSize:14,fontWeight:700,boxShadow:"0 2px 12px rgba(99,102,241,0.35)"}}>
-                ▶ 질문 듣기
-              </button>
+            <div style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0"}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:"#6366f1",
+                animation:"pulse 1s ease-in-out infinite"}}/>
+              <span style={{color:"#6366f1",fontSize:13}}>질문 준비 중...</span>
             </div>
           )}
           {phase==="examiner_speaking" && (
