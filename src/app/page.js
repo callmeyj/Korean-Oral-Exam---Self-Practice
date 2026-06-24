@@ -8,7 +8,7 @@ const KB_QUESTIONS = {
     "주말에 가족하고 보통 뭐 해요?","당신의 방에는 뭐가 있어요?","집에서 누가 청소를 해요?",
     "저녁밥은 누구하고 먹어요?","당신은 애완동물이 있어요?","생일에 보통 뭐 해요?",
     "이번 생일에 뭐 하고 싶어요?","지난 생일에 무슨 선물을 받았어요?",
-    "엄마/아빠는 어떤 사람이에요?","집에서 어떤 곳이 제일 좋아요?",
+    "엄마 어떤 사람이에요?","집에서 어떤 곳이 제일 좋아요?",
   ],
   "친구, 여가, 취미": [
     "취미가 뭐예요? 왜요?","그 취미를 언제 시작했어요?","어떤 영화를 좋아해요? 왜요?",
@@ -208,8 +208,10 @@ export default function App() {
 
     const onEnd = ()=>{
       if (!examActiveRef.current) return;
+      // Auto-start listening — no button needed
       setPhase("waiting_student");
       phaseRef.current = "waiting_student";
+      setTimeout(()=> startListening(), 300);
     };
 
     // Try auto-play first; if synth not ready, show play button
@@ -230,6 +232,7 @@ export default function App() {
     const onEnd = pendingOnEndRef.current || (()=>{
       setPhase("waiting_student");
       phaseRef.current = "waiting_student";
+      setTimeout(()=> startListening(), 300);
     });
     pendingOnEndRef.current = null;
     setTtsReady(true);
@@ -360,6 +363,7 @@ export default function App() {
         if (!examActiveRef.current) return;
         setPhase("waiting_student");
         phaseRef.current = "waiting_student";
+        setTimeout(()=> startListening(), 300);
       };
       if (synthRef.current && ttsReady) {
         setPhase("examiner_speaking");
@@ -527,7 +531,7 @@ Return ONLY valid JSON:
 
         <div style={{...S.card,background:"rgba(99,102,241,0.06)",border:"1px solid rgba(99,102,241,0.2)"}}>
           <div style={S.label}>시작 전 확인</div>
-          {["🎙 마이크 허용 필요 (Chrome 권장)","🔊 스피커/헤드폰 준비","⏱ 실제 시험처럼 한국어로만 답변","✅ 말하면 자동 인식 — 멈추면 자동으로 다음 질문"].map((t,i)=>(
+          {["🎙 마이크 허용 필요 (Chrome 권장)","🔊 스피커 준비","⏱ 실제 시험처럼 한국어로만 답변","✅ 말하면 자동 인식 — 멈추면 자동으로 다음 질문"].map((t,i)=>(
             <div key={i} style={{fontSize:13,color:"#94a3b8",marginBottom:4}}>{t}</div>
           ))}
         </div>
