@@ -147,8 +147,13 @@ export default function App() {
   const [loadingFeedback, setLoadingFeedback] = useState(false);
 
   // refs to avoid stale closures
-  const synthRef    = useRef(window.speechSynthesis);
+  const synthRef    = useRef(null);
   const timerRef    = useRef(null);
+
+  // Initialize browser APIs safely (only runs client-side)
+  useEffect(() => {
+    synthRef.current = window.speechSynthesis;
+  }, []);
   const convRef     = useRef([]);
   const questionsRef= useRef([]);
   const qIndexRef   = useRef(0);
