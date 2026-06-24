@@ -162,6 +162,10 @@ export default function App() {
   const examActiveRef = useRef(false);
   const isFollowUpRef = useRef(false); // tracks if current question is a follow-up
 
+  // TTS ready state - mobile requires user gesture first
+  const [ttsReady, setTtsReady] = useState(false);
+  const pendingOnEndRef = useRef(null);
+
   // STT refs
   const recRef      = useRef(null);
   const accRef      = useRef("");
@@ -197,18 +201,41 @@ export default function App() {
 
     isFollowUpRef.current = false;
     setCurrentQ(q);
-    setPhase("examiner_speaking");
-    phaseRef.current = "examiner_speaking";
 
     const msg = { role:"examiner", text:q, isFollowUp:false };
     convRef.current = [...convRef.current, msg];
     setConversation([...convRef.current]);
 
-    speak(q, ()=>{
+    const onEnd = ()=>{
       if (!examActiveRef.current) return;
       setPhase("waiting_student");
       phaseRef.current = "waiting_student";
+    };
+
+    // Try auto-play first; if synth not ready, show play button
+    if (synthRef.current && ttsReady) {
+      setPhase("examiner_speaking");
+      phaseRef.current = "examiner_speaking";
+      speak(q, onEnd);
+    } else {
+      // Show play button for user to tap (mobile requires gesture)
+      pendingOnEndRef.current = onEnd;
+      setPhase("question_ready");
+      phaseRef.current = "question_ready";
+    }
+  }
+
+  // ── User taps play button (mobile) ──
+  function handlePlayQuestion() {
+    const onEnd = pendingOnEndRef.current || (()=>{
+      setPhase("waiting_student");
+      phaseRef.current = "waiting_student";
     });
+    pendingOnEndRef.current = null;
+    setTtsReady(true);
+    setPhase("examiner_speaking");
+    phaseRef.current = "examiner_speaking";
+    speak(currentQ, onEnd);
   }
 
   // ── STT: starts on button press, auto-submits when student stops talking ──
@@ -329,13 +356,20 @@ export default function App() {
       convRef.current = [...convRef.current, fum];
       setConversation([...convRef.current]);
       setCurrentQ(fu.trim());
-      setPhase("examiner_speaking");
-      phaseRef.current = "examiner_speaking";
-      speak(fu.trim(), ()=>{
+      const fuOnEnd = ()=>{
         if (!examActiveRef.current) return;
         setPhase("waiting_student");
         phaseRef.current = "waiting_student";
-      });
+      };
+      if (synthRef.current && ttsReady) {
+        setPhase("examiner_speaking");
+        phaseRef.current = "examiner_speaking";
+        speak(fu.trim(), fuOnEnd);
+      } else {
+        pendingOnEndRef.current = fuOnEnd;
+        setPhase("question_ready");
+        phaseRef.current = "question_ready";
+      }
     } else {
       moveNext();
     }
@@ -556,6 +590,17 @@ Return ONLY valid JSON:
           )}
 
           {/* Status dots */}
+          {phase==="question_ready" && (
+            <div style={{display:"flex",justifyContent:"flex-start",marginBottom:8}}>
+              <button onClick={handlePlayQuestion}
+                style={{display:"flex",alignItems:"center",gap:8,padding:"10px 18px",
+                  borderRadius:12,border:"none",cursor:"pointer",
+                  background:"linear-gradient(135deg,#6366f1,#8b5cf6)",color:"white",
+                  fontSize:14,fontWeight:700,boxShadow:"0 2px 12px rgba(99,102,241,0.35)"}}>
+                ▶ 질문 듣기
+              </button>
+            </div>
+          )}
           {phase==="examiner_speaking" && (
             <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0"}}>
               {[0,1,2].map(i=>(
