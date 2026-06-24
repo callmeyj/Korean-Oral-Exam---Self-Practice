@@ -118,8 +118,8 @@ function buildQList(level, topicFilter) {
   return shuffle(bank[topicFilter]||[]);
 }
 async function callClaude(messages, system) {
-  const res = await fetch("/api/claude", {
-    method:"POST", headers:{"Content-Type":"application/json"},
+  const res = await fetch("/api", {
+    method:"POST", headers:{"Content-Type":"application"},
     body: JSON.stringify({ max_tokens:800, system, messages }),
   });
   const d = await res.json();
@@ -160,11 +160,12 @@ export default function App() {
   const phaseRef    = useRef("idle");
   const liveRef     = useRef("");
   const examActiveRef = useRef(false);
-  const isFollowUpRef = useRef(false); // tracks if current question is a follow-up
-
   // TTS ready state - mobile requires user gesture first
   const [ttsReady, setTtsReady] = useState(false);
   const pendingOnEndRef = useRef(null);
+
+  // OEE stage tracker: 0=Opening answered, 1=Extended answered, 2=Enrichment answered→move next
+  const oeeStageRef = useRef(0);
 
   // STT refs
   const recRef      = useRef(null);
@@ -193,38 +194,39 @@ export default function App() {
     synthRef.current.speak(u);
   }
 
-  // ── Ask a main question ──
-  function askQuestion(qs, idx) {
+  // ── Speak a question then auto-start mic ──
+  function speakAndListen(text, isFollowUp=false) {
     if (!examActiveRef.current) return;
-    const q = qs[idx];
-    if (!q) { endExam(); return; }
-
-    isFollowUpRef.current = false;
-    setCurrentQ(q);
-
-    const msg = { role:"examiner", text:q, isFollowUp:false };
+    setCurrentQ(text);
+    const msg = { role:"examiner", text, isFollowUp };
     convRef.current = [...convRef.current, msg];
     setConversation([...convRef.current]);
 
     const onEnd = ()=>{
       if (!examActiveRef.current) return;
-      // Auto-start listening — no button needed
       setPhase("waiting_student");
       phaseRef.current = "waiting_student";
-      setTimeout(()=> startListening(), 300);
+      setTimeout(()=> startListening(), 400);
     };
 
-    // Try auto-play first; if synth not ready, show play button
     if (synthRef.current && ttsReady) {
       setPhase("examiner_speaking");
       phaseRef.current = "examiner_speaking";
-      speak(q, onEnd);
+      speak(text, onEnd);
     } else {
-      // Show play button for user to tap (mobile requires gesture)
       pendingOnEndRef.current = onEnd;
       setPhase("question_ready");
       phaseRef.current = "question_ready";
     }
+  }
+
+  // ── Ask Opening Question (start of OEE cycle) ──
+  function askQuestion(qs, idx) {
+    if (!examActiveRef.current) return;
+    const q = qs[idx];
+    if (!q) { endExam(); return; }
+    oeeStageRef.current = 0;
+    speakAndListen(q, false);
   }
 
   // ── User taps play button (mobile) ──
@@ -232,7 +234,7 @@ export default function App() {
     const onEnd = pendingOnEndRef.current || (()=>{
       setPhase("waiting_student");
       phaseRef.current = "waiting_student";
-      setTimeout(()=> startListening(), 300);
+      setTimeout(()=> startListening(), 400);
     });
     pendingOnEndRef.current = null;
     setTtsReady(true);
@@ -316,78 +318,78 @@ export default function App() {
     phaseRef.current = "processing";
     setLiveText("");
 
-    if (isFollowUpRef.current) {
-      handleFollowUpAnswer(text);
-    } else {
-      handleMainAnswer(text);
-    }
+    handleStudentTurn(text);
   }
 
-  // ── Handle answer to a main question → generate follow-up ──
-  async function handleMainAnswer(text) {
+  // ── OEE: Handle student answer based on current stage ──
+  async function handleStudentTurn(text) {
     if (!examActiveRef.current) return;
+    setPhase("processing");
+    phaseRef.current = "processing";
+    setLiveText("");
 
-    // Add student message
-    const sm = { role:"student", text };
-    convRef.current = [...convRef.current, sm];
-    setConversation([...convRef.current]);
-
-    // Generate follow-up question
-    const history = convRef.current.map(m=>
-      `${m.role==="examiner"?"시험관":"학생"}: ${m.text}`
-    ).join("\n");
-
-    const sys = `당신은 NSW HSC ${level==="KB"?"Korean Beginners":"Korean Continuers"} 구술 시험관입니다.
-학생의 답변에 자연스럽게 이어지는 후속 질문을 한국어로 하나만 하세요.
-- 한국어로만 질문
-- 질문 하나만
-- 학생 답변 내용에 자연스럽게 이어지게
-- 짧은 답변이면 더 자세히 유도 (왜요? 예를 들어요? 더 말해 보세요 등)
-- 칭찬이나 피드백 금지
-- 질문 텍스트만 출력`;
-
-    const fu = await callClaude(
-      [{role:"user", content:`대화:\n${history}\n\n후속 질문:`}],
-      sys
-    ).catch(()=>"");
-
-    if (!examActiveRef.current) return;
-
-    if (fu && fu.trim()) {
-      isFollowUpRef.current = true;
-      const fum = { role:"examiner", text:fu.trim(), isFollowUp:true };
-      convRef.current = [...convRef.current, fum];
-      setConversation([...convRef.current]);
-      setCurrentQ(fu.trim());
-      const fuOnEnd = ()=>{
-        if (!examActiveRef.current) return;
-        setPhase("waiting_student");
-        phaseRef.current = "waiting_student";
-        setTimeout(()=> startListening(), 300);
-      };
-      if (synthRef.current && ttsReady) {
-        setPhase("examiner_speaking");
-        phaseRef.current = "examiner_speaking";
-        speak(fu.trim(), fuOnEnd);
-      } else {
-        pendingOnEndRef.current = fuOnEnd;
-        setPhase("question_ready");
-        phaseRef.current = "question_ready";
-      }
-    } else {
-      moveNext();
-    }
-  }
-
-  // ── Handle answer to follow-up → next main question ──
-  function handleFollowUpAnswer(text) {
-    if (!examActiveRef.current) return;
+    // Save student answer
     if (text) {
       const sm = { role:"student", text };
       convRef.current = [...convRef.current, sm];
       setConversation([...convRef.current]);
     }
-    moveNext();
+
+    const stage = oeeStageRef.current;
+    const history = convRef.current.map(m=>
+      `${m.role==="examiner"?"시험관":"학생"}: ${m.text}`
+    ).join("\n");
+
+    if (stage === 0) {
+      // Opening answered → ask Extended Question (언제, 어디서, 누구랑, 얼마나 등)
+      oeeStageRef.current = 1;
+      const sys = `당신은 NSW HSC ${level==="KB"?"Korean Beginners":"Korean Continuers"} 구술 시험관입니다.
+학생이 Opening Question에 답했습니다. 이제 Extended Question을 하나 하세요.
+Extended Question은 학생 답변의 구체적인 내용을 더 깊이 파고드는 질문입니다.
+예: 언제요? 어디에서요? 누구하고요? 얼마나 자주요? 어떻게요?
+규칙:
+- 한국어로만
+- 질문 하나만
+- 왜요? 는 사용하지 마세요 (Enrichment 단계에서 씁니다)
+- 칭찬 금지
+- 질문 텍스트만 출력`;
+      const q = await callClaude([{role:"user",content:`대화:\n${history}\n\nExtended Question:`}], sys).catch(()=>"");
+      if (!examActiveRef.current) return;
+      if (q && q.trim()) {
+        speakAndListen(q.trim(), true);
+      } else {
+        oeeStageRef.current = 2;
+        askEnrichment(history);
+      }
+
+    } else if (stage === 1) {
+      // Extended answered → ask Enrichment Question (왜요? 어떻게 생각해요? 느낌? 의견?)
+      oeeStageRef.current = 2;
+      askEnrichment(history);
+
+    } else {
+      // Enrichment answered → move to next Opening Question
+      moveNext();
+    }
+  }
+
+  async function askEnrichment(history) {
+    const sys = `당신은 NSW HSC ${level==="KB"?"Korean Beginners":"Korean Continuers"} 구술 시험관입니다.
+학생이 Extended Question에 답했습니다. 이제 Enrichment Question을 하나 하세요.
+Enrichment Question은 학생의 의견, 느낌, 이유, 생각을 묻는 질문입니다.
+예: 왜 그렇게 생각해요? 어떤 느낌이에요? 그게 중요해요? 어떻게 생각해요? 부모님은 어떻게 생각해요?
+규칙:
+- 한국어로만
+- 질문 하나만
+- 칭찬 금지
+- 질문 텍스트만 출력`;
+    const q = await callClaude([{role:"user",content:`대화:\n${history}\n\nEnrichment Question:`}], sys).catch(()=>"");
+    if (!examActiveRef.current) return;
+    if (q && q.trim()) {
+      speakAndListen(q.trim(), true);
+    } else {
+      moveNext();
+    }
   }
 
   function moveNext() {
@@ -419,7 +421,7 @@ export default function App() {
     setCurrentQ("");
     setLiveText("");
     examActiveRef.current = true;
-    isFollowUpRef.current = false;
+    oeeStageRef.current = 0;
     setScreen("exam");
 
     timerRef.current = setInterval(()=>{
@@ -429,7 +431,8 @@ export default function App() {
       });
     }, 1000);
 
-    setTimeout(()=> askQuestion(qs, 0), 800);
+    // Start immediately — TTS will show play button if needed
+    setTimeout(()=> askQuestion(qs, 0), 300);
   }
 
   // ── End exam ──
@@ -493,7 +496,7 @@ Return ONLY valid JSON:
 
   const timeLeft = MAX_TIME - timer;
   const timeColor = timeLeft<60?"#f87171":timeLeft<120?"#fb923c":"#a5b4fc";
-  const progressPct = (timer/MAX_TIME)*100;
+  const progressPct = (timer_TIME)*100;
 
   // ─── SETUP SCREEN ─────────────────────────────────────────────────────────
   if (screen==="setup") return (
@@ -564,7 +567,7 @@ Return ONLY valid JSON:
             <div key={i} style={{display:"flex",justifyContent:msg.role==="student"?"flex-end":"flex-start",marginBottom:10}}>
               <div style={{maxWidth:"82%"}}>
                 <div style={{fontSize:11,color:"#475569",marginBottom:2,textAlign:msg.role==="student"?"right":"left"}}>
-                  {msg.role==="examiner"?(msg.isFollowUp?"시험관 (후속)":"시험관"):"나"}
+                  {msg.role==="examiner"?(msg.isFollowUp ? (oeeStageRef.current===1?"시험관 (Extended)":"시험관 (Enrichment)") :"시험관"):"나"}
                 </div>
                 {showTranscript ? (
                   <div style={{
@@ -742,7 +745,7 @@ function FeedbackView({ fb, scoreColor, band, level }) {
         <FBList emoji="✅" title="Strengths / 잘한 점" items={fb.strengths_en} itemsKo={fb.strengths_ko} color="34,197,94" lang={lang}/>
         <FBList emoji="📈" title="Improve / 개선할 점" items={fb.improvements_en} itemsKo={fb.improvements_ko} color="251,146,60" lang={lang}/>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
-          {[{e:"📝",t:"Grammar/문법",en:fb.grammar_en,ko:fb.grammar_ko},{e:"💬",t:"Vocab/어휘",en:fb.vocab_en,ko:fb.vocab_ko},{e:"🗣",t:"Fluency/유창성",en:fb.fluency_en,ko:fb.fluency_ko}].map(n=>(
+          {[{e:"📝",t:"Grammar",en:fb.grammar_en,ko:fb.grammar_ko},{e:"💬",t:"Vocab",en:fb.vocab_en,ko:fb.vocab_ko},{e:"🗣",t:"Fluency",en:fb.fluency_en,ko:fb.fluency_ko}].map(n=>(
             <div key={n.t} style={{background:"rgba(255,255,255,0.02)",borderRadius:10,padding:12,border:"1px solid rgba(255,255,255,0.06)"}}>
               <div style={{fontWeight:700,color:"#e0e7ff",fontSize:12,marginBottom:6}}>{n.e} {n.t}</div>
               {lang!=="ko" && <p style={{color:"#94a3b8",fontSize:12,margin:"0 0 4px",lineHeight:1.5}}>{n.en}</p>}
