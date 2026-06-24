@@ -1,7 +1,13 @@
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+};
+
 export const metadata = {
   title: "HSC Korean Oral Practice",
   description: "AI examiner for NSW HSC Korean Beginners and Continuers oral exam practice",
-  viewport: "width=device-width, initial-scale=1, maximum-scale=1",
+
 };
 
 export default function RootLayout({ children }) {
