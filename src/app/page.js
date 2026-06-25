@@ -347,6 +347,17 @@ export default function App() {
     }
   }
 
+  function fmtTime(s){ return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); }
+
+  // ── Ask Opening Question (start of OEE cycle) ──
+  function askQuestion(qs, idx) {
+    if (!examActiveRef.current) return;
+    const q = qs[idx];
+    if (!q) { endExam(); return; }
+    oeeStageRef.current = 0;
+    speakAndListen(q, false);
+  }
+
   // ── OEE: Handle student answer based on current stage ──
   async function handleStudentTurn(text) {
     if (!examActiveRef.current) return;
