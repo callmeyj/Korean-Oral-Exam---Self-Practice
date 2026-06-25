@@ -349,6 +349,61 @@ export default function App() {
 
   function fmtTime(s){ return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); }
 
+  // ── TTS via OpenAI ──
+  const audioRef = useRef(null);
+
+  async function speak(text, onEnd) {
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    try {
+      const res = await fetch("/api/tts", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error("TTS failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; if(onEnd) onEnd(); };
+      audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; if(onEnd) onEnd(); };
+      try { await audio.play(); } catch(e) { if(onEnd) onEnd(); }
+    } catch(err) {
+      console.error("TTS error:", err);
+      if(onEnd) onEnd();
+    }
+  }
+
+  // ── Speak question then auto-start mic ──
+  function speakAndListen(text, isFollowUp=false) {
+    if (!examActiveRef.current) return;
+    setCurrentQ(text);
+    const msg = { role:"examiner", text, isFollowUp };
+    convRef.current = [...convRef.current, msg];
+    setConversation([...convRef.current]);
+
+    const onEnd = ()=>{
+      if (!examActiveRef.current) return;
+      setPhase("waiting_student");
+      phaseRef.current = "waiting_student";
+      setTimeout(()=>{
+        if (examActiveRef.current && micStreamRef.current) startListening();
+      }, 500);
+    };
+
+    setPhase("examiner_speaking");
+    phaseRef.current = "examiner_speaking";
+    speak(text, onEnd);
+  }
+
+  // ── Submit student answer to OEE handler ──
+  function submitAnswer(text) {
+    if (!examActiveRef.current) return;
+    setPhase("processing");
+    phaseRef.current = "processing";
+    setLiveText("");
+    handleStudentTurn(text);
+  }
+
   // ── Ask Opening Question (start of OEE cycle) ──
   function askQuestion(qs, idx) {
     if (!examActiveRef.current) return;
