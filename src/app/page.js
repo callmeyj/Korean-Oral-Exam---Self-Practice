@@ -1,4 +1,4 @@
-"use client";   
+"use client";
 import { useState, useRef, useEffect } from "react";
 
 // ─── Question Banks ────────────────────────────────────────────────────────
@@ -212,10 +212,16 @@ export default function App() {
         if (onEnd) onEnd();
       };
 
-      await audio.play();
+      try {
+        await audio.play();
+      } catch(playErr) {
+        console.error("Play error:", playErr);
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        if (onEnd) onEnd();
+      }
     } catch (err) {
       console.error("TTS error:", err);
-      // Fallback: skip TTS and just call onEnd
       if (onEnd) onEnd();
     }
   }
@@ -232,7 +238,9 @@ export default function App() {
       if (!examActiveRef.current) return;
       setPhase("waiting_student");
       phaseRef.current = "waiting_student";
-      setTimeout(()=> startListening(), 400);
+      setTimeout(()=>{
+        if (examActiveRef.current) startListening();
+      }, 300);
     };
 
     setPhase("examiner_speaking");
@@ -253,7 +261,7 @@ export default function App() {
 
   // ── STT: starts on button press, auto-submits when student stops talking ──
   function startListening() {
-    if (phaseRef.current !== "waiting_student") return;
+    if (phaseRef.current !== "waiting_student" && phaseRef.current !== "examiner_speaking") return;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { alert("Chrome 브라우저를 사용해 주세요."); return; }
 
