@@ -272,15 +272,23 @@ export default function App() {
     accRef.current = "";
     listeningRef.current = true;
 
+    // Use a single continuous session with silence detection
+    // When student pauses for ~1.5s, we submit automatically
+    let silenceTimer = null;
+    const SILENCE_THRESHOLD = 1500; // 1.5 seconds of silence = done speaking
+
     function runSession() {
       if (!listeningRef.current) return;
       const rec = new SR();
       rec.lang = "ko-KR";
-      rec.continuous = false;     // browser detects end-of-speech automatically
+      rec.continuous = true;      // keep mic open
       rec.interimResults = true;
       recRef.current = rec;
 
       rec.onresult = (e) => {
+        // Clear silence timer — student is still speaking
+        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
+
         let interim = "";
         for (let i=0; i<e.results.length; i++) {
           if (e.results[i].isFinal) {
@@ -292,23 +300,32 @@ export default function App() {
         const display = (accRef.current + " " + interim).trim();
         setLiveText(display);
         liveRef.current = display;
+
+        // Start silence timer — if no more speech for 1.5s, submit
+        if (accRef.current.trim()) {
+          silenceTimer = setTimeout(() => {
+            if (listeningRef.current && accRef.current.trim()) {
+              listeningRef.current = false;
+              if (recRef.current) {
+                try { recRef.current.stop(); } catch(e) {}
+                recRef.current = null;
+              }
+              submitAnswer(accRef.current.trim());
+            }
+          }, SILENCE_THRESHOLD);
+        }
       };
 
+      // If browser cuts continuous session, restart
       rec.onend = () => {
         if (!listeningRef.current) return;
-        if (accRef.current.trim()) {
-          // Got speech → submit
-          listeningRef.current = false;
-          submitAnswer(accRef.current.trim());
-        } else {
-          // Silence only → keep waiting, restart session
-          setTimeout(runSession, 200);
-        }
+        // Restart session to keep mic open
+        setTimeout(runSession, 100);
       };
 
       rec.onerror = (e) => {
         if (!listeningRef.current) return;
-        if (e.error === "no-speech" || e.error === "aborted") {
+        if (e.error === "no-speech" || e.error === "aborted" || e.error === "network") {
           setTimeout(runSession, 200);
         }
       };
