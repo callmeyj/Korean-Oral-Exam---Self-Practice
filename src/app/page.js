@@ -163,9 +163,10 @@ export default function App() {
   const oeeStageRef = useRef(0);
 
   // STT refs
-  const recRef      = useRef(null);
-  const accRef      = useRef("");
-  const listeningRef= useRef(false);
+  const recRef        = useRef(null);
+  const accRef        = useRef("");
+  const listeningRef  = useRef(false);
+  const micStreamRef  = useRef(null); // holds mic stream for whole exam — no repeated permission popups
 
   const MAX_TIME = level==="KB" ? 300 : 600;
   const topics   = level==="KB" ? KB_QUESTIONS : KC_QUESTIONS;
@@ -246,6 +247,7 @@ export default function App() {
     setPhase("examiner_speaking");
     phaseRef.current = "examiner_speaking";
     speak(text, onEnd);
+    // Show text immediately so student can read while audio loads
   }
 
   // ── Ask Opening Question (start of OEE cycle) ──
@@ -273,13 +275,13 @@ export default function App() {
     listeningRef.current = true;
 
     let silenceTimer = null;
-    const SILENCE_MS = 1800; // submit after 1.8s silence
+    const SILENCE_MS = 2500; // submit after 2.5s silence — gives phone users time
 
     function runSession() {
       if (!listeningRef.current) return;
       const rec = new SR();
       rec.lang = "ko-KR";
-      rec.continuous = false;   // false = more reliable, no permission loop
+      rec.continuous = false;
       rec.interimResults = true;
       recRef.current = rec;
 
@@ -395,9 +397,13 @@ export default function App() {
       }
 
     } else if (stage === 1) {
-      // Extended answered → ask Enrichment Question (왜요? 어떻게 생각해요? 느낌? 의견?)
+      // Extended answered → ask Enrichment Question
       oeeStageRef.current = 2;
-      askEnrichment(history);
+      // Update history to include student's latest answer
+      const updatedHistory = convRef.current.map(m=>
+        `${m.role==="examiner"?"시험관":"학생"}: ${m.text}`
+      ).join("\n");
+      askEnrichment(updatedHistory);
 
     } else {
       // Enrichment answered → move to next Opening Question
@@ -446,8 +452,13 @@ export default function App() {
     setLiveText("");
     examActiveRef.current = true;
     oeeStageRef.current = 0;
-    // Mark TTS as ready — user gesture (button click) unlocks autoplay
     setScreen("exam");
+    // Request mic permission upfront — no popups during exam
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => { micStreamRef.current = stream; })
+        .catch(() => { micStreamRef.current = null; });
+    }
 
     timerRef.current = setInterval(()=>{
       setTimer(t=>{
