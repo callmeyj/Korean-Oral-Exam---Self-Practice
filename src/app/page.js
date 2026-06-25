@@ -270,20 +270,15 @@ export default function App() {
     // Collect data every 200ms
     mr.start(200);
 
-    // Show recording indicator
-    let dots = 0;
-    const dotTimer = setInterval(() => {
-      if (!recordingRef.current) { clearInterval(dotTimer); return; }
-      dots = (dots + 1) % 4;
-      setLiveText("●".repeat(dots + 1));
-    }, 400);
+    // Show clear recording indicator
+    setLiveText("🎙 녹음 중... 말하고 멈추세요");
 
     // Auto-submit after silence (3 seconds after last sound)
     // We use a simple timer: after 4 seconds total, stop and transcribe
     // Student can also press mic button to stop manually
     silenceTimerRef.current = setTimeout(() => {
       if (recordingRef.current) stopAndTranscribe();
-    }, 4000);
+    }, 8000);
   }
 
   async function stopAndTranscribe() {
@@ -309,10 +304,15 @@ export default function App() {
     const blob = new Blob(chunksRef.current, { type: "audio/webm" });
     chunksRef.current = [];
 
-    if (blob.size < 500) {
-      // Too short — no speech
+    if (blob.size < 3000) {
+      // Too short — likely silence, keep listening
       setLiveText("");
-      submitAnswer("");
+      // Restart listening instead of submitting empty
+      setPhase("waiting_student");
+      phaseRef.current = "waiting_student";
+      setTimeout(()=>{
+        if (examActiveRef.current && micStreamRef.current) startListening();
+      }, 300);
       return;
     }
 
