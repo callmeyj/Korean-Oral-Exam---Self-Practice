@@ -272,65 +272,66 @@ export default function App() {
     accRef.current = "";
     listeningRef.current = true;
 
-    // Use a single continuous session with silence detection
-    // When student pauses for ~1.5s, we submit automatically
     let silenceTimer = null;
-    const SILENCE_THRESHOLD = 1500; // 1.5 seconds of silence = done speaking
+    const SILENCE_MS = 1800; // submit after 1.8s silence
 
     function runSession() {
       if (!listeningRef.current) return;
       const rec = new SR();
       rec.lang = "ko-KR";
-      rec.continuous = true;      // keep mic open
+      rec.continuous = false;   // false = more reliable, no permission loop
       rec.interimResults = true;
       recRef.current = rec;
 
       rec.onresult = (e) => {
-        // Clear silence timer — student is still speaking
         if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
 
+        // Only add NEW final results (avoid duplicates on restart)
+        let newFinal = "";
         let interim = "";
-        for (let i=0; i<e.results.length; i++) {
+        for (let i = 0; i < e.results.length; i++) {
           if (e.results[i].isFinal) {
-            accRef.current = (accRef.current + " " + e.results[i][0].transcript).trim();
+            newFinal += e.results[i][0].transcript;
           } else {
             interim += e.results[i][0].transcript;
           }
         }
+        if (newFinal) {
+          accRef.current = (accRef.current + " " + newFinal).trim();
+        }
         const display = (accRef.current + " " + interim).trim();
         setLiveText(display);
         liveRef.current = display;
+      };
 
-        // Start silence timer — if no more speech for 1.5s, submit
+      rec.onend = () => {
+        if (!listeningRef.current) return;
         if (accRef.current.trim()) {
+          // Got speech — wait for silence then submit
+          if (silenceTimer) clearTimeout(silenceTimer);
           silenceTimer = setTimeout(() => {
             if (listeningRef.current && accRef.current.trim()) {
               listeningRef.current = false;
-              if (recRef.current) {
-                try { recRef.current.stop(); } catch(e) {}
-                recRef.current = null;
-              }
+              recRef.current = null;
               submitAnswer(accRef.current.trim());
             }
-          }, SILENCE_THRESHOLD);
-        }
-      };
-
-      // If browser cuts continuous session, restart
-      rec.onend = () => {
-        if (!listeningRef.current) return;
-        // Restart session to keep mic open
-        setTimeout(runSession, 100);
-      };
-
-      rec.onerror = (e) => {
-        if (!listeningRef.current) return;
-        if (e.error === "no-speech" || e.error === "aborted" || e.error === "network") {
+          }, SILENCE_MS);
+          // Also restart to catch more speech
+          setTimeout(runSession, 100);
+        } else {
+          // No speech yet — restart silently
           setTimeout(runSession, 200);
         }
       };
 
-      try { rec.start(); } catch(e) {}
+      rec.onerror = (e) => {
+        if (!listeningRef.current) return;
+        if (e.error === "no-speech" || e.error === "aborted") {
+          setTimeout(runSession, 200);
+        }
+      };
+
+      try { rec.start(); } catch(err) {}
     }
 
     runSession();
@@ -378,8 +379,11 @@ export default function App() {
       oeeStageRef.current = 1;
       // Check if student already explained WHY in their answer
       const alreadyExplainedWhy = text && (text.includes("왜냐하면") || text.includes("니까") || text.includes("때문") || text.includes("어서") || text.includes("아서"));
-      const sys = alreadyExplainedWhy
-        ? `당신은 NSW HSC ${level==="KB"?"Korean Beginners":"Korean Continuers"} 구술 시험관입니다. 학생이 이유를 이미 설명했습니다. 학생 답변 내용을 더 발전시키는 Extended Question을 하나 하세요. 예: 그러면 [내용]을 하면 어때요? 언제 [내용]을 해요? 누구하고 [내용]을 해요? 규칙: 한국어로만, 질문 하나만, 왜요 금지, 칭찬 금지, 질문 텍스트만 출력.`
+      // Some questions don't need "왜요?" - factual answers about nationality, age, family members etc
+      const lastExaminerQ = convRef.current.filter(m=>m.role==="examiner" && !m.isFollowUp).slice(-1)[0]?.text || "";
+      const isFactualQ = lastExaminerQ.includes("어느 나라") || lastExaminerQ.includes("몇 살") || lastExaminerQ.includes("몇 명") || lastExaminerQ.includes("누구하고") || lastExaminerQ.includes("언제") || lastExaminerQ.includes("어디에 살") || lastExaminerQ.includes("몇 학년") || lastExaminerQ.includes("누구예요");
+      const sys = (alreadyExplainedWhy || isFactualQ)
+        ? `당신은 NSW HSC ${level==="KB"?"Korean Beginners":"Korean Continuers"} 구술 시험관입니다. 학생 답변을 바탕으로 자연스러운 Extended Question을 하나 하세요. 예: 언제요? 어디에서요? 누구하고요? 얼마나 자주요? 어떻게요? 규칙: 한국어로만, 질문 하나만, 왜요 금지, 칭찬 금지, 질문 텍스트만 출력.`
         : `당신은 NSW HSC ${level==="KB"?"Korean Beginners":"Korean Continuers"} 구술 시험관입니다. 학생이 Opening Question에 답했습니다. 왜요? 라고 물어보세요. 딱 왜요? 한 단어만 출력하세요.`;
       const q = await callClaude([{role:"user",content:`대화:\n${history}\n\nExtended Question:`}], sys).catch(()=>"");
       if (!examActiveRef.current) return;
