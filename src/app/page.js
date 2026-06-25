@@ -196,6 +196,8 @@ export default function App() {
   const [screen, setScreen] = useState("setup");
   const [level, setLevel]   = useState("KB");
   const [topicFilter, setTopicFilter] = useState("mixed");
+  const MAX_TIME = level === "KB" ? 300 : 600;
+  const topics   = level === "KB" ? KB_QUESTIONS : KC_QUESTIONS;
 
   // exam
   const [questions, setQuestions]     = useState([]);
@@ -227,199 +229,122 @@ export default function App() {
   // OEE stage tracker: 0=Opening answered, 1=Extended answered, 2=Enrichment answered→move next
   const oeeStageRef = useRef(0);
 
-  // STT refs
-  const recRef        = useRef(null);
-  const accRef        = useRef("");
-  const listeningRef  = useRef(false);
-  const micStreamRef  = useRef(null); // holds mic stream for whole exam — no repeated permission popups
+  // ── Whisper STT: MediaRecorder → /api/stt → transcript ──
+  const mediaRecRef   = useRef(null);
+  const chunksRef     = useRef([]);
+  const recordingRef  = useRef(false);
+  const silenceTimerRef = useRef(null);
+  const micStreamRef  = useRef(null);
 
-  const MAX_TIME = level==="KB" ? 300 : 600;
-  const topics   = level==="KB" ? KB_QUESTIONS : KC_QUESTIONS;
+  // Get mic stream once at exam start (no repeated permission popups)
+  async function initMic() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = stream;
+      return true;
+    } catch(e) {
+      alert("마이크 접근 권한이 필요해요. 브라우저 설정에서 마이크를 허용해 주세요.");
+      return false;
+    }
+  }
 
-  useEffect(()=>{ convRef.current=conversation; },[conversation]);
-  useEffect(()=>{ phaseRef.current=phase; },[phase]);
-  useEffect(()=>{ liveRef.current=liveText; },[liveText]);
+  function startListening() {
+    if (!micStreamRef.current) return;
+    if (recordingRef.current) return;
 
-  function fmtTime(s){ return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`; }
+    recordingRef.current = true;
+    chunksRef.current = [];
+    setLiveText("");
+    liveRef.current = "";
+    setPhase("listening");
+    phaseRef.current = "listening";
 
-  // ── TTS via OpenAI (works on all devices including mobile) ──
-  const audioRef = useRef(null);
+    // Use existing stream — no new permission popup!
+    const mr = new MediaRecorder(micStreamRef.current, { mimeType: "audio/webm" });
+    mediaRecRef.current = mr;
 
-  async function speak(text, onEnd) {
-    // Stop any currently playing audio
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
+    };
+
+    // Collect data every 200ms
+    mr.start(200);
+
+    // Show recording indicator
+    let dots = 0;
+    const dotTimer = setInterval(() => {
+      if (!recordingRef.current) { clearInterval(dotTimer); return; }
+      dots = (dots + 1) % 4;
+      setLiveText("●".repeat(dots + 1));
+    }, 400);
+
+    // Auto-submit after silence (3 seconds after last sound)
+    // We use a simple timer: after 4 seconds total, stop and transcribe
+    // Student can also press mic button to stop manually
+    silenceTimerRef.current = setTimeout(() => {
+      if (recordingRef.current) stopAndTranscribe();
+    }, 4000);
+  }
+
+  async function stopAndTranscribe() {
+    if (!recordingRef.current) return;
+    recordingRef.current = false;
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+
+    const mr = mediaRecRef.current;
+    if (!mr || mr.state === "inactive") {
+      submitAnswer("");
+      return;
+    }
+
+    setPhase("processing");
+    phaseRef.current = "processing";
+    setLiveText("🔄 인식 중...");
+
+    await new Promise(resolve => {
+      mr.onstop = resolve;
+      mr.stop();
+    });
+
+    const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+    chunksRef.current = [];
+
+    if (blob.size < 500) {
+      // Too short — no speech
+      setLiveText("");
+      submitAnswer("");
+      return;
     }
 
     try {
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-
-      if (!res.ok) throw new Error("TTS failed");
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audioRef.current = audio;
-
-      audio.onended = () => {
-        URL.revokeObjectURL(url);
-        audioRef.current = null;
-        if (onEnd) onEnd();
-      };
-
-      audio.onerror = () => {
-        URL.revokeObjectURL(url);
-        audioRef.current = null;
-        if (onEnd) onEnd();
-      };
-
-      try {
-        await audio.play();
-      } catch(playErr) {
-        console.error("Play error:", playErr);
-        URL.revokeObjectURL(url);
-        audioRef.current = null;
-        if (onEnd) onEnd();
-      }
-    } catch (err) {
-      console.error("TTS error:", err);
-      if (onEnd) onEnd();
+      const fd = new FormData();
+      fd.append("audio", blob, "audio.webm");
+      const res = await fetch("/api/stt", { method: "POST", body: fd });
+      const data = await res.json();
+      const text = data.transcript || "";
+      setLiveText(text);
+      liveRef.current = text;
+      submitAnswer(text);
+    } catch(e) {
+      console.error("STT error:", e);
+      setLiveText("");
+      submitAnswer("");
     }
-  }
-
-  // ── Speak a question then auto-start mic ──
-  function speakAndListen(text, isFollowUp=false) {
-    if (!examActiveRef.current) return;
-    setCurrentQ(text);
-    const msg = { role:"examiner", text, isFollowUp };
-    convRef.current = [...convRef.current, msg];
-    setConversation([...convRef.current]);
-
-    const onEnd = ()=>{
-      if (!examActiveRef.current) return;
-      setPhase("waiting_student");
-      phaseRef.current = "waiting_student";
-      setTimeout(()=>{
-        if (examActiveRef.current) startListening();
-      }, 300);
-    };
-
-    setPhase("examiner_speaking");
-    phaseRef.current = "examiner_speaking";
-    speak(text, onEnd);
-    // Show text immediately so student can read while audio loads
-  }
-
-  // ── Ask Opening Question (start of OEE cycle) ──
-  function askQuestion(qs, idx) {
-    if (!examActiveRef.current) return;
-    const q = qs[idx];
-    if (!q) { endExam(); return; }
-    oeeStageRef.current = 0;
-    speakAndListen(q, false);
-  }
-
-
-
-  // ── STT: starts on button press, auto-submits when student stops talking ──
-  function startListening() {
-    if (phaseRef.current !== "waiting_student" && phaseRef.current !== "examiner_speaking") return;
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { alert("Chrome 브라우저를 사용해 주세요."); return; }
-
-    setPhase("listening");
-    phaseRef.current = "listening";
-    setLiveText("");
-    liveRef.current = "";
-    accRef.current = "";
-    listeningRef.current = true;
-
-    let silenceTimer = null;
-    const SILENCE_MS = 2500; // submit after 2.5s silence — gives phone users time
-
-    function runSession() {
-      if (!listeningRef.current) return;
-      const rec = new SR();
-      rec.lang = "ko-KR";
-      rec.continuous = false;
-      rec.interimResults = true;
-      recRef.current = rec;
-
-      rec.onresult = (e) => {
-        if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; }
-
-        // Only add NEW final results (avoid duplicates on restart)
-        let newFinal = "";
-        let interim = "";
-        for (let i = 0; i < e.results.length; i++) {
-          if (e.results[i].isFinal) {
-            newFinal += e.results[i][0].transcript;
-          } else {
-            interim += e.results[i][0].transcript;
-          }
-        }
-        if (newFinal) {
-          accRef.current = (accRef.current + " " + newFinal).trim();
-        }
-        const display = (accRef.current + " " + interim).trim();
-        setLiveText(display);
-        liveRef.current = display;
-      };
-
-      rec.onend = () => {
-        if (!listeningRef.current) return;
-        if (accRef.current.trim()) {
-          // Got speech — wait for silence then submit
-          if (silenceTimer) clearTimeout(silenceTimer);
-          silenceTimer = setTimeout(() => {
-            if (listeningRef.current && accRef.current.trim()) {
-              listeningRef.current = false;
-              recRef.current = null;
-              submitAnswer(accRef.current.trim());
-            }
-          }, SILENCE_MS);
-          // Also restart to catch more speech
-          setTimeout(runSession, 100);
-        } else {
-          // No speech yet — restart silently
-          setTimeout(runSession, 200);
-        }
-      };
-
-      rec.onerror = (e) => {
-        if (!listeningRef.current) return;
-        if (e.error === "no-speech" || e.error === "aborted") {
-          setTimeout(runSession, 200);
-        }
-      };
-
-      try { rec.start(); } catch(err) {}
-    }
-
-    runSession();
   }
 
   function stopListening() {
-    listeningRef.current = false;
-    if (recRef.current) {
-      try { recRef.current.abort(); } catch(e) {}
-      recRef.current = null;
+    recordingRef.current = false;
+    if (silenceTimerRef.current) { clearTimeout(silenceTimerRef.current); silenceTimerRef.current = null; }
+    if (mediaRecRef.current && mediaRecRef.current.state !== "inactive") {
+      try { mediaRecRef.current.stop(); } catch(e) {}
     }
   }
 
-  // ── Submit student's answer ──
-  function submitAnswer(text) {
-    if (!examActiveRef.current) return;
-    setPhase("processing");
-    phaseRef.current = "processing";
-    setLiveText("");
-
-    handleStudentTurn(text);
+  // Mic button: press to stop recording manually (auto-stops after 4s)
+  function handleMicButton() {
+    if (phaseRef.current === "listening" && recordingRef.current) {
+      stopAndTranscribe();
+    }
   }
 
   // ── OEE: Handle student answer based on current stage ──
@@ -518,12 +443,10 @@ export default function App() {
     examActiveRef.current = true;
     oeeStageRef.current = 0;
     setScreen("exam");
-    // Request mic permission upfront — no popups during exam
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then(stream => { micStreamRef.current = stream; })
-        .catch(() => { micStreamRef.current = null; });
-    }
+    // Init mic once — no repeated permission popups
+    initMic().then(ok => {
+      if (ok) console.log("Mic ready");
+    });
 
     timerRef.current = setInterval(()=>{
       setTimer(t=>{
