@@ -351,8 +351,22 @@ export default function App() {
 
   // ── TTS via OpenAI ──
   const audioRef = useRef(null);
+  const firstAudioRef = useRef(null); // prefetched first question audio
 
   async function speak(text, onEnd) {
+    // Use prefetched audio if available
+    if (firstAudioRef.current) {
+      const blob = firstAudioRef.current;
+      firstAudioRef.current = null; // consume it
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; if(onEnd) onEnd(); };
+      audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; if(onEnd) onEnd(); };
+      try { await audio.play(); return; } catch(e) {}
+      // If play fails, fall through to fetch
+    }
+
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
     try {
       const res = await fetch("/api/tts", {
@@ -482,16 +496,23 @@ export default function App() {
     const next = qIndexRef.current + 1;
     qIndexRef.current = next;
     setQIndex(next);
+    // Prefetch next question TTS while processing
+    const nextQ = questionsRef.current[next];
+    if (nextQ) {
+      fetch("/api/tts", {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ text: nextQ })
+      }).then(r => r.blob()).then(blob => {
+        firstAudioRef.current = blob;
+      }).catch(()=>{});
+    }
     setTimeout(()=>{
       if (examActiveRef.current) askQuestion(questionsRef.current, next);
     }, 500);
   }
 
   // ── Mic button ──
-  function handleMicButton() {
-    if (phase === "waiting_student") startListening();
-    // No manual stop — STT auto-detects end of speech
-  }
+
 
   // ── Start exam ──
   function startExam() {
@@ -509,9 +530,21 @@ export default function App() {
     examActiveRef.current = true;
     oeeStageRef.current = 0;
     setScreen("exam");
-    // Init mic once — no repeated permission popups
-    initMic().then(ok => {
-      if (ok) console.log("Mic ready");
+
+    // Init mic + prefetch first TTS simultaneously
+    const firstQ = qs[0];
+    Promise.all([
+      initMic(),
+      firstQ ? fetch("/api/tts", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ text: firstQ })
+      }).then(r => r.blob()).then(blob => {
+        // Cache the first audio blob
+        firstAudioRef.current = blob;
+      }).catch(()=>{}) : Promise.resolve()
+    ]).then(() => {
+      console.log("Mic + TTS ready");
     });
 
     timerRef.current = setInterval(()=>{
@@ -541,7 +574,7 @@ export default function App() {
       `${m.role==="examiner"?"Examiner":"Student"}: ${m.text}`
     ).join("\n");
 
-    const sys = `You are an expert NSW HSC ${level==="KB"?"Korean Beginners":"Korean Continuers"} oral exam marker. NESA criteria (out of 20): 17-20=excellent control, spontaneous, rich vocabulary; 13-16=sound knowledge, relevant info; 9-12=some knowledge, needs prompting; 5-8=basic single words; 1-4=minimal. Score in 0.5 increments. Return ONLY valid JSON: {"score":<number>,"band":"<e.g. Band 5 (High)>","summary_en":"<2 sentences>","summary_ko":"<Korean>","strengths_en":["<specific>","<specific>","<specific>"],"strengths_ko":["<Korean>","<Korean>","<Korean>"],"improvements_en":["<specific>","<specific>","<specific>"],"improvements_ko":["<Korean>","<Korean>","<Korean>"],"grammar_en":"<observations>","grammar_ko":"<Korean>","vocab_en":"<observations>","vocab_ko":"<Korean>","fluency_en":"<observations>","fluency_ko":"<Korean>","next_steps_en":"<2-3 tips>","next_steps_ko":"<Korean>"}`;
+    const sys = `You are an expert NSW HSC ${level==="KB"?"Korean Beginners":"Korean Continuers"} oral exam marker. NESA criteria (out of 20): 17-20=excellent; 13-16=sound; 9-12=some knowledge; 5-8=basic; 1-4=minimal. Score in 0.5 increments. Return ONLY valid JSON: {"score":<number>,"band":"<e.g. Band 5>","band_detail":"<e.g. High Band 5>","strengths_en":["<specific with example>","<specific>","<specific>"],"strengths_ko":["<Korean>","<Korean>","<Korean>"],"improvements_en":["<specific with example>","<specific>","<specific>"],"improvements_ko":["<Korean>","<Korean>","<Korean>"],"suggested_sentences_en":["<example Korean sentence student could use>","<example>","<example>"],"suggested_sentences_ko":["<Korean>","<Korean>","<Korean>"],"grammar_en":"<grammar observations>","grammar_ko":"<Korean>","vocab_en":"<vocab observations>","vocab_ko":"<Korean>","fluency_en":"<fluency observations>","fluency_ko":"<Korean>"}`;
 
     const result = await callClaude(
       [{role:"user", content:`Assess this oral exam:\n\n${history}`}],
@@ -764,71 +797,91 @@ export default function App() {
 function FeedbackView({ fb, scoreColor, band, level }) {
   const [lang, setLang] = useState("both");
   const scale = BAND_INFO[level];
+  const score = fb.score;
+
   return (
-    <div>
-      <div style={{textAlign:"center",padding:"20px 0 16px",marginBottom:16,background:"rgba(255,255,255,0.02)",borderRadius:18,border:`1px solid ${scoreColor}30`}}>
-        <div style={{fontSize:60,fontWeight:900,color:scoreColor,lineHeight:1}}>{fb.score}</div>
-        <div style={{color:"#64748b",fontSize:13,marginTop:2}}>/ 20점</div>
-        <div style={{marginTop:6,fontWeight:800,fontSize:18,color:"#e0e7ff"}}>{fb.band}</div>
-        <div style={{marginTop:8,fontSize:13,color:"#94a3b8",maxWidth:360,margin:"8px auto 0",lineHeight:1.5}}>
-          {lang!=="ko" && fb.summary_en}
-          {lang==="both" && <br/>}
-          {lang!=="en" && <span style={{color:"#64748b"}}>{fb.summary_ko}</span>}
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+
+      {/* Score Hero */}
+      <div style={{textAlign:"center",padding:"28px 20px",background:"rgba(255,255,255,0.02)",borderRadius:20,border:`2px solid ${scoreColor}40`}}>
+        <div style={{fontSize:14,color:"#64748b",marginBottom:4,textTransform:"uppercase",letterSpacing:"0.1em"}}>Your marks at this stage</div>
+        <div style={{fontSize:72,fontWeight:900,color:scoreColor,lineHeight:1}}>{score}</div>
+        <div style={{fontSize:20,color:"#94a3b8",fontWeight:700,marginTop:2}}>/ 20</div>
+        <div style={{marginTop:12,display:"inline-block",padding:"6px 20px",borderRadius:20,background:`${scoreColor}22`,border:`1px solid ${scoreColor}60`}}>
+          <span style={{fontWeight:800,fontSize:16,color:scoreColor}}>{fb.band_detail || fb.band}</span>
         </div>
       </div>
 
-      <div style={{display:"flex",gap:3,marginBottom:16}}>
+      {/* Band Scale */}
+      <div style={{display:"flex",gap:3}}>
         {[...scale].reverse().map(b=>(
-          <div key={b.band} style={{flex:1,padding:"6px 3px",textAlign:"center",background:band?.band===b.band?`${b.color}22`:"rgba(255,255,255,0.02)",border:`2px solid ${band?.band===b.band?b.color:"transparent"}`,borderRadius:7}}>
+          <div key={b.band} style={{flex:1,padding:"6px 3px",textAlign:"center",
+            background:band?.band===b.band?`${b.color}22`:"rgba(255,255,255,0.02)",
+            border:`2px solid ${band?.band===b.band?b.color:"transparent"}`,borderRadius:8}}>
             <div style={{fontSize:10,color:b.color,fontWeight:700}}>{b.band}</div>
             <div style={{fontSize:9,color:"#475569"}}>{b.min}–{b.max}</div>
           </div>
         ))}
       </div>
 
-      <div style={{display:"flex",gap:6,marginBottom:14}}>
-        {[["both","EN+KO"],["en","English"],["ko","한국어"]].map(([v,l])=>(
-          <button key={v} onClick={()=>setLang(v)} style={{padding:"4px 12px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,background:lang===v?"#6366f1":"rgba(255,255,255,0.07)",color:"#e0e7ff"}}>{l}</button>
+      {/* Language toggle */}
+      <div style={{display:"flex",gap:6}}>
+        {[["both","EN + 한국어"],["en","English"],["ko","한국어"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setLang(v)}
+            style={{padding:"5px 12px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
+              background:lang===v?"#6366f1":"rgba(255,255,255,0.07)",color:"#e0e7ff"}}>{l}</button>
         ))}
       </div>
 
-      <div style={{display:"flex",flexDirection:"column",gap:10}}>
-        <FBList emoji="✅" title="Strengths / 잘한 점" items={fb.strengths_en} itemsKo={fb.strengths_ko} color="34,197,94" lang={lang}/>
-        <FBList emoji="📈" title="Improve / 개선할 점" items={fb.improvements_en} itemsKo={fb.improvements_ko} color="251,146,60" lang={lang}/>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
-          {[{e:"📝",t:"Grammar",en:fb.grammar_en,ko:fb.grammar_ko},{e:"💬",t:"Vocab",en:fb.vocab_en,ko:fb.vocab_ko},{e:"🗣",t:"Fluency",en:fb.fluency_en,ko:fb.fluency_ko}].map(n=>(
-            <div key={n.t} style={{background:"rgba(255,255,255,0.02)",borderRadius:10,padding:12,border:"1px solid rgba(255,255,255,0.06)"}}>
-              <div style={{fontWeight:700,color:"#e0e7ff",fontSize:12,marginBottom:6}}>{n.e} {n.t}</div>
-              {lang!=="ko" && <p style={{color:"#94a3b8",fontSize:12,margin:"0 0 4px",lineHeight:1.5}}>{n.en}</p>}
-              {lang!=="en" && <p style={{color:"#64748b",fontSize:11,margin:0,lineHeight:1.5}}>{n.ko}</p>}
-            </div>
-          ))}
-        </div>
-        <div style={{background:"rgba(99,102,241,0.07)",borderRadius:10,padding:14,border:"1px solid rgba(99,102,241,0.2)"}}>
-          <div style={{fontWeight:700,color:"#a5b4fc",marginBottom:6,fontSize:13}}>🎯 Next Steps</div>
-          {lang!=="ko" && <p style={{color:"#cbd5e1",fontSize:13,margin:"0 0 6px",lineHeight:1.6}}>{fb.next_steps_en}</p>}
-          {lang!=="en" && <p style={{color:"#94a3b8",fontSize:12,margin:0,lineHeight:1.6}}>{fb.next_steps_ko}</p>}
-        </div>
-      </div>
-    </div>
-  );
-}
+      {/* Strengths */}
+      <FBSection emoji="✅" title="Strengths" titleKo="잘한 점"
+        items={fb.strengths_en} itemsKo={fb.strengths_ko} color="34,197,94" lang={lang} />
 
-function FBList({ emoji, title, items, itemsKo, color, lang }) {
-  return (
-    <div style={{background:`rgba(${color},0.06)`,borderRadius:10,padding:14,border:`1px solid rgba(${color},0.2)`}}>
-      <div style={{fontWeight:700,color:"#e0e7ff",marginBottom:8,fontSize:13}}>{emoji} {title}</div>
-      <div style={{display:"flex",flexDirection:"column",gap:6}}>
-        {items?.map((item,i)=>(
-          <div key={i} style={{paddingLeft:10,borderLeft:`2px solid rgba(${color},0.3)`}}>
-            {lang!=="ko" && <div style={{color:"#cbd5e1",fontSize:13,lineHeight:1.5}}>{item}</div>}
-            {lang!=="en" && itemsKo?.[i] && <div style={{color:"#64748b",fontSize:12,marginTop:1}}>{itemsKo[i]}</div>}
+      {/* Improvements */}
+      <FBSection emoji="📈" title="Areas to Improve" titleKo="개선할 점"
+        items={fb.improvements_en} itemsKo={fb.improvements_ko} color="251,146,60" lang={lang} />
+
+      {/* Suggested Sentences */}
+      <FBSection emoji="💡" title="Suggested Sentences" titleKo="이렇게 말해보세요"
+        items={fb.suggested_sentences_en} itemsKo={fb.suggested_sentences_ko} color="99,102,241" lang={lang} />
+
+      {/* Grammar / Vocab / Fluency */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+        {[
+          {e:"📝",t:"Grammar",tk:"문법",en:fb.grammar_en,ko:fb.grammar_ko},
+          {e:"💬",t:"Vocabulary",tk:"어휘",en:fb.vocab_en,ko:fb.vocab_ko},
+          {e:"🗣",t:"Fluency",tk:"유창성",en:fb.fluency_en,ko:fb.fluency_ko},
+        ].map(n=>(
+          <div key={n.t} style={{background:"rgba(255,255,255,0.02)",borderRadius:12,padding:14,border:"1px solid rgba(255,255,255,0.07)"}}>
+            <div style={{fontWeight:700,color:"#e0e7ff",fontSize:13,marginBottom:6}}>{n.e} {n.t}<span style={{display:"block",color:"#475569",fontSize:11,fontWeight:400}}>{n.tk}</span></div>
+            {lang!=="ko" && <p style={{color:"#94a3b8",fontSize:12,margin:"0 0 6px",lineHeight:1.5}}>{n.en}</p>}
+            {lang!=="en" && <p style={{color:"#64748b",fontSize:11,margin:0,lineHeight:1.5}}>{n.ko}</p>}
           </div>
         ))}
       </div>
     </div>
   );
 }
+
+function FBSection({ emoji, title, titleKo, items, itemsKo, color, lang }) {
+  return (
+    <div style={{background:`rgba(${color},0.06)`,borderRadius:14,padding:16,border:`1px solid rgba(${color},0.2)`}}>
+      <div style={{fontWeight:800,color:"#e0e7ff",marginBottom:12,fontSize:15}}>
+        {emoji} {title}
+        <span style={{color:"#64748b",fontWeight:400,fontSize:12,marginLeft:8}}>/ {titleKo}</span>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {items?.map((item,i)=>(
+          <div key={i} style={{paddingLeft:12,borderLeft:`3px solid rgba(${color},0.4)`}}>
+            {lang!=="ko" && <div style={{color:"#cbd5e1",fontSize:13,lineHeight:1.6}}>{item}</div>}
+            {lang!=="en" && itemsKo?.[i] && <div style={{color:"#64748b",fontSize:12,marginTop:2,lineHeight:1.5}}>{itemsKo[i]}</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 
 // ─── Styles ──────────────────────────────────────────────────────────────
 const S = {
