@@ -147,13 +147,9 @@ export default function App() {
   const [loadingFeedback, setLoadingFeedback] = useState(false);
 
   // refs to avoid stale closures
-  const synthRef    = useRef(null);
   const timerRef    = useRef(null);
 
   // Initialize browser APIs safely (only runs client-side)
-  useEffect(() => {
-    synthRef.current = window.speechSynthesis;
-  }, []);
   const convRef     = useRef([]);
   const questionsRef= useRef([]);
   const qIndexRef   = useRef(0);
@@ -161,7 +157,6 @@ export default function App() {
   const liveRef     = useRef("");
   const examActiveRef = useRef(false);
   // TTS ready state - mobile requires user gesture first
-  const [ttsReady, setTtsReady] = useState(false);
   const pendingOnEndRef = useRef(null);
 
   // OEE stage tracker: 0=Opening answered, 1=Extended answered, 2=Enrichment answered→move next
@@ -181,17 +176,48 @@ export default function App() {
 
   function fmtTime(s){ return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`; }
 
-  // ── TTS ──
-  function speak(text, onEnd) {
-    synthRef.current.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang="ko-KR"; u.rate=0.88; u.pitch=1;
-    const voices = synthRef.current.getVoices();
-    const kv = voices.find(v=>v.lang.startsWith("ko"));
-    if(kv) u.voice=kv;
-    u.onend = ()=>{ if(onEnd) onEnd(); };
-    u.onerror = ()=>{ if(onEnd) onEnd(); };
-    synthRef.current.speak(u);
+  // ── TTS via OpenAI (works on all devices including mobile) ──
+  const audioRef = useRef(null);
+
+  async function speak(text, onEnd) {
+    // Stop any currently playing audio
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!res.ok) throw new Error("TTS failed");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        if (onEnd) onEnd();
+      };
+
+      audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        if (onEnd) onEnd();
+      };
+
+      await audio.play();
+    } catch (err) {
+      console.error("TTS error:", err);
+      // Fallback: skip TTS and just call onEnd
+      if (onEnd) onEnd();
+    }
   }
 
   // ── Speak a question then auto-start mic ──
@@ -209,15 +235,9 @@ export default function App() {
       setTimeout(()=> startListening(), 400);
     };
 
-    // Always try to speak directly — ttsReady set on startExam button press
-    if (synthRef.current) {
-      setPhase("examiner_speaking");
-      phaseRef.current = "examiner_speaking";
-      speak(text, onEnd);
-    } else {
-      // Fallback: skip TTS, just start listening
-      onEnd();
-    }
+    setPhase("examiner_speaking");
+    phaseRef.current = "examiner_speaking";
+    speak(text, onEnd);
   }
 
   // ── Ask Opening Question (start of OEE cycle) ──
@@ -229,19 +249,7 @@ export default function App() {
     speakAndListen(q, false);
   }
 
-  // ── Fallback if TTS was delayed — speak current question ──
-  function handlePlayQuestion() {
-    const onEnd = pendingOnEndRef.current || (()=>{
-      setPhase("waiting_student");
-      phaseRef.current = "waiting_student";
-      setTimeout(()=> startListening(), 400);
-    });
-    pendingOnEndRef.current = null;
-    if (!synthRef.current) synthRef.current = window.speechSynthesis;
-    setPhase("examiner_speaking");
-    phaseRef.current = "examiner_speaking";
-    speak(currentQ, onEnd);
-  }
+
 
   // ── STT: starts on button press, auto-submits when student stops talking ──
   function startListening() {
@@ -410,8 +418,6 @@ export default function App() {
     examActiveRef.current = true;
     oeeStageRef.current = 0;
     // Mark TTS as ready — user gesture (button click) unlocks autoplay
-    setTtsReady(true);
-    if (!synthRef.current) synthRef.current = window.speechSynthesis;
     setScreen("exam");
 
     timerRef.current = setInterval(()=>{
@@ -430,7 +436,7 @@ export default function App() {
     if (!examActiveRef.current) return;
     examActiveRef.current = false;
     clearInterval(timerRef.current);
-    synthRef.current.cancel();
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
     stopListening();
     setPhase("idle");
     phaseRef.current = "idle";
@@ -558,13 +564,7 @@ export default function App() {
           )}
 
           {/* Status dots */}
-          {phase==="question_ready" && (
-            <div style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0"}}>
-              <div style={{width:8,height:8,borderRadius:"50%",background:"#6366f1",
-                animation:"pulse 1s ease-in-out infinite"}}/>
-              <span style={{color:"#6366f1",fontSize:13}}>질문 준비 중...</span>
-            </div>
-          )}
+
           {phase==="examiner_speaking" && (
             <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0"}}>
               {[0,1,2].map(i=>(
