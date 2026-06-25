@@ -354,33 +354,31 @@ export default function App() {
   const firstAudioRef = useRef(null); // prefetched first question audio
 
   async function speak(text, onEnd) {
-    // Use prefetched audio if available
-    if (firstAudioRef.current) {
-      const blob = firstAudioRef.current;
-      firstAudioRef.current = null; // consume it
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; if(onEnd) onEnd(); };
-      audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; if(onEnd) onEnd(); };
-      try { await audio.play(); return; } catch(e) {}
-      // If play fails, fall through to fetch
-    }
-
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+
+    // Use prefetched audio if available
+    const prefetched = firstAudioRef.current;
+    firstAudioRef.current = null;
+
     try {
-      const res = await fetch("/api/tts", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) throw new Error("TTS failed");
-      const blob = await res.blob();
+      let blob;
+      if (prefetched) {
+        blob = prefetched;
+      } else {
+        const res = await fetch("/api/tts", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) throw new Error("TTS failed");
+        blob = await res.blob();
+      }
+
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
       audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; if(onEnd) onEnd(); };
       audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; if(onEnd) onEnd(); };
-      try { await audio.play(); } catch(e) { if(onEnd) onEnd(); }
+      await audio.play();
     } catch(err) {
       console.error("TTS error:", err);
       if(onEnd) onEnd();
@@ -583,8 +581,17 @@ export default function App() {
 
     try {
       const clean = result.replace(/```json|```/g,"").trim();
-      setFeedback(JSON.parse(clean));
-    } catch { setFeedback({_raw:result}); }
+      // Find JSON object in the response
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        setFeedback(JSON.parse(jsonMatch[0]));
+      } else {
+        setFeedback(JSON.parse(clean));
+      }
+    } catch(e) {
+      console.error("Feedback parse error:", e, result);
+      setFeedback({_raw: result});
+    }
     setLoadingFeedback(false);
   }
 
